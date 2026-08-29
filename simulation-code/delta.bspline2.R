@@ -2,13 +2,14 @@
 #-- delta.bspline2.R
 #-- data generation function for calibration bias simulations 
 #-- author: Sarah Hegarty
-#-- date: 5 May 2025
+#-- date: 15 August 2025
 #--------------------------------------------------------------- 
 
 
 # B-spline Deviation Shifted
 delta.curve <- function(z,delta = delta){
-  basis <- splines:::bs(z, knots = c(0.15,0.35,0.55,0.97), degree = 3, Boundary.knots = range(z))
+  basis <- splines:::bs(z, knots = c(0.15,0.35,0.55,0.97), degree = 3
+                        , Boundary.knots = c(0,1))
   
   
   coef <- as.matrix(c(delta,-delta,0,0,delta,0,0))
