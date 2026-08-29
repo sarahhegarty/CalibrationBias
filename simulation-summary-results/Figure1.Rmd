@@ -1,0 +1,104 @@
+---
+title: '[P13] CalBias: 13.05.01.01'
+subtitle: 'Obermeyer Varying Coefficient Estimate'
+author: "Sarah Hegarty"
+date: "Last compiled on `r format(Sys.time(), '%d %B %Y')`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objective
+I want to propose a test for variance differences in the calibration model.
+i.e. I propose to fit the following GAM:
+$Y_i = \mu(r_i) + \Delta(r_i)I(s_i = s) + \varepsilon_{i}$
+where $\varepsilon_i | s_i = s \sim N(0,\sigma_s^2)$
+
+Then want to test $\sigma_1^2 = \sigma_2^2$
+
+```{r loadLibs, message = FALSE}
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(patchwork)
+library(mgcv)
+library(microbenchmark) 
+library(parallel) 
+library(foreach)
+library(iterators) 
+library(doParallel)
+library(splines)
+
+```
+
+```{r loadFuncs}
+path <- dirname(getwd())
+grandpath <- dirname(path)
+
+source(paste0(grandpath,"/funcs/vc-funcs-2025-07-21.R"))
+```
+
+```{r}
+set.seed(20934832)
+r <- runif(100000)
+
+source(paste0(grandpath,"/funcs/cal.base.R"))
+c <- cal.base(r)
+
+source(paste0(grandpath,"/funcs/delta.shift.R"))
+bshift_0 <- delta.curve(r, 0)
+bshift_1 <- delta.curve(r, 0.1)
+bshift_2 <- delta.curve(r, 0.2)
+source(paste0(grandpath,"/funcs/delta.bspline0.R"))
+bs0_1 <- delta.curve(r, delta=0.1)
+bs0_2 <- delta.curve(r, delta=0.2)
+source(paste0(grandpath,"/funcs/delta.bspline1.R"))
+bs1_1 <- delta.curve(r, delta=0.1)
+bs1_2 <- delta.curve(r, delta=0.2)
+source(paste0(grandpath,"/funcs/delta.bspline2.R"))
+bs2_1 <- delta.curve(r, delta=0.1)
+bs2_2 <- delta.curve(r, delta=0.2)
+
+
+df <- data.frame(r, c, bshift_0
+                 , bshift_1, bshift_2
+                 , bs0_1, bs0_2
+                 , bs1_1, bs1_2
+                 , bs2_1, bs2_2
+                 )
+```
+
+```{r}
+a <- df %>%
+        ggplot(aes(r,c)) +
+        geom_line() + 
+        theme_bw() + 
+        ylab("c(r)") + xlab("r")
+
+b <- df %>%
+        ggplot(aes(r,bshift_0)) +
+        geom_line() + 
+        theme_bw() + 
+        ylab(expression(Delta(r))) + xlab("r")
+
+c <- df %>%
+        ggplot() +
+        geom_line(aes(r,bs0_1),color="blue") + 
+        geom_line(aes(r,bs0_2),color="blue",linetype='dashed') + 
+        geom_line(aes(r,bs1_1),color="green") + 
+        geom_line(aes(r,bs1_2),color="green",linetype='dashed') + 
+        geom_line(aes(r,bs2_1),color="purple") + 
+        geom_line(aes(r,bs2_2),color="purple",linetype='dashed') + 
+        geom_hline(yintercept=0) +
+        theme(aspect.ratio=1) + 
+        theme_bw() + 
+        ylab(expression(Delta(r))) + xlab("r") +
+        ylim(-0.4,0.2)
+
+a | b | c
+ggsave("fig-sim-settings.png",width=8,height=3,dpi=300)
+
+```
