@@ -1,0 +1,367 @@
+---
+title: '[P13] CalBias: 13.05.02.01'
+subtitle: 'Obermeyer Varying Coefficient Estimate'
+author: "Sarah Hegarty"
+date: "Last compiled on `r format(Sys.time(), '%d %B %Y')`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objective
+I want to propose a test for variance differences in the calibration model.
+i.e. I propose to fit the following GAM:
+$Y_i = \mu(r_i) + \Delta(r_i)I(s_i = s) + \varepsilon_{i}$
+where $\varepsilon_i | s_i = s \sim N(0,\sigma_s^2)$
+
+Then want to test $\sigma_1^2 = \sigma_2^2$
+
+```{r loadLibs, message = FALSE}
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(patchwork)
+library(mgcv)
+library(microbenchmark) 
+library(parallel) 
+library(foreach)
+library(iterators) 
+library(doParallel)
+
+set.seed(2827131)
+```
+
+```{r loadFuncs}
+path <- dirname(getwd())
+grandpath <- dirname(path)
+source(paste0(grandpath,"/funcs/vc-funcs-2025-07-21.R"))
+```
+
+```{r readData}
+ob <- read.csv(file=paste0(path,"/Obermeyer-data_new.csv"))[,c(1:18,160)]
+
+ecdf.score <- ecdf(ob$risk_score_t)
+ob <- ob %>%
+      mutate(logcost = log(cost_t + 1)
+             ,risk_score = risk_score_t/100
+             ,risk_score.q = ecdf.score(risk_score_t)) %>%
+      rename(ncond = gagne_sum_t) %>%
+      dplyr::select(risk_score_t, risk_score, risk_score.q, logcost, race, ncond)
+
+
+ob <- ob %>%
+        mutate(S= if_else(race == 'black',1,0))
+
+ob.downsamp <- ob %>%
+                group_by(race) %>%  
+                slice_sample(n = 2439)
+```
+
+```{r}
+ob %>%
+    group_by(race) %>%
+    summarize(n = n()) %>%
+    mutate(pct = n/nrow(ob))
+
+summary(ob$logcost)
+
+ob.downsamp %>%
+    group_by(race) %>%
+    summarize(n = n()) %>%
+    mutate(pct = n/nrow(ob.downsamp))
+
+summary(ob.downsamp$logcost)
+ob.downsamp %>%
+    group_by(race) %>%
+    summarize(median(logcost)
+              ,min(logcost)
+              ,max(logcost))
+```
+
+# Data Components
+```{r}
+Y <- ob.downsamp$logcost
+s <- ob.downsamp$S
+u <- ob.downsamp$risk_score.q
+
+U = unique(u)
+```
+
+# Pilot Bandwidth Selection
+```{r}
+# ----------------------------------------------------------- #
+# --------- Bandwidth Selection ----------------------------- #
+# ----------------------------------------------------------- #
+
+# ---- Select pilot bandwidth for local cubic polynomial to minimize IRSC ---- #
+rsc.start <- Sys.time()
+# defining h grid using Fan and Gijbels approach:
+U.max = max(U); U.min = min(U); n = length(u)
+h.min <- (U.max - U.min)/n # this is too small for many u to invert all matrices so:
+h.min <- max(h.min, 0.025*(U.max - U.min))
+h.max <- (U.max - U.min)/2
+h.grid <- seq(h.min, h.max, 0.01)
+adj <- 0.7776
+
+rsc.u0 <- NULL
+irsc.h <- NULL
+for(h in h.grid){
+  rsc.h <- NULL
+  for(x in U){
+    r <- rsc(Y,s,u, u0=x, q = 1, a = 2, h=h)
+    rsc.h <- rbind(rsc.h, c(x, h, r)) 
+    colnames(rsc.h) <- c("u0","h","RSC")
+  }
+  irsc <- mean(rsc.h[,"RSC"])
+  irsc.h <- rbind(irsc.h, c(h, irsc)) 
+  colnames(irsc.h) <- c("h","IRSC")
+  rsc.u0 <- rbind(rsc.u0, rsc.h)
+}
+
+h.star <- irsc.h %>% as.data.frame() %>% slice_min(IRSC, n = 1 ) %>% pull(h)
+h.rsc <- h.star*adj
+
+rsc.end <- Sys.time()
+rsc.runtime <- rsc.end - rsc.start
+
+h.min; h.max; h.star; h.rsc
+```
+
+
+```{r}
+h.rsc.min <- irsc.h %>%
+    as.data.frame() %>%
+    unique() %>%
+    slice_min(IRSC)
+irsc.h %>% as.data.frame() %>%
+      ggplot(aes(h, IRSC)) +
+      geom_point(data= h.rsc.min, aes(h,IRSC), color='green') +
+      geom_line() + theme_bw() + ylab("IRSC") + xlab("h")
+ggsave("Obermeyer-2439-rsc.png")
+
+h.rsc <- (h.rsc.min %>% pull(h))*0.7776
+
+h.rsc.min; h.rsc
+```
+
+```{r}
+# ---- Select local linear bandwidth by minimizing MSE(h) ---- #
+bvs.start <- Sys.time()
+# Get local cubic quantities necessary for MSE calculation
+bvs <- list() 
+for(j in 1:length(U)){
+  bv.u <- zheng.mse.cubics(Y, s, u, u0 =U[j], h.star = h.rsc, q = 1, a = 2)
+  bv.u
+  bvs[[j]] <- bv.u
+}
+names(bvs) <- U
+bvs.end <- Sys.time()
+bvs.runtime <- bvs.end - bvs.start
+
+mse.start <- Sys.time()
+# Over grid of h, compute MSE
+hgrid <- seq(0.02, h.star, 0.01)
+mse.h.u <- NULL
+for(h in hgrid){
+  for(u0 in U){
+    m.u <- zheng.mse(Y = Y, s = s, u = u, u0 = u0, h = h, q=1, bvs = bvs)
+    mse.h.u <- rbind(mse.h.u, c(h, u0, m.u))
+   # colnames(mse.h.u) <- c("h", "u0","MSE.u")
+  }
+}
+colnames(mse.h.u) <- c("h", "u0","MSE.u","MSE.bias","MSE.var")
+mse.h <- mse.h.u %>%
+  as.data.frame() %>%
+  group_by(h) %>%
+  summarize(MSE.mean = mean(as.numeric(MSE.u))
+            ,MSE.bias = mean(as.numeric(MSE.bias))
+            ,MSE.var = mean(as.numeric(MSE.var)))
+mse.h.min <- mse.h %>%
+  slice_min(MSE.mean, n = 1)
+h.mse <- mse.h.min %>% pull(h)
+mse.end <- Sys.time()
+mse.runtime <- mse.end - mse.start 
+
+h.opt <- 0.5*as.numeric(h.mse) # approach used by Fan and Zhang (2000) to use 0 bias
+
+h.mse; h.opt 
+
+mse.h %>%
+  ggplot(aes(as.numeric(h), MSE.mean)) + 
+  geom_line() +
+  geom_line(aes(as.numeric(h), MSE.bias),linetype='dashed',color='blue') +
+   geom_line(aes(as.numeric(h), MSE.var),linetype='dashed',color='grey') +
+  geom_point(data=mse.h.min, aes(as.numeric(h), MSE.mean),color='green') +
+  theme_bw() + ylab("MSE") + xlab("h")
+
+ggsave("Obermeyer-2439-mse.png")
+```
+
+
+```{r}
+# ----------------------------------------------------------- #
+# --------- Varying Coefficient Model ----------------------- #
+# ----------------------------------------------------------- #
+
+fit.start <- Sys.time()
+#h.opt = 0.03
+#h.bias =0.12
+alpha=0.05
+# ---- Fit VC model with h.opt (linear) and h.rsc (cubic) ---- #
+fit <- vcfit.bvs(Y,s,u, h= h.opt, h.bias = h.rsc, alpha = 0.05)
+
+ests <- fit %>%
+  as.data.frame() %>%
+  mutate(# calculate true curves
+         # Calculate D_a
+         ,h.opt = h.opt
+         ,D.int = D(alpha = alpha, h = h.opt, var = var.int)
+         ,D.s = D(alpha = alpha, h = h.opt, var = var.s)
+         # Calculate CIs for intercept
+         ,lower.int = est.int - bias.int - D.int
+         ,upper.int = est.int - bias.int + D.int
+         # Calculate CIs for s
+         ,lower.s = est.s - bias.s - D.s
+         ,upper.s = est.s - bias.s + D.s
+        )
+
+plot.int <- ests %>%
+    ggplot()+
+    geom_line(aes(risk, est.int),color='blue', linewidth =1.2) +
+    geom_line(aes(risk, lower.int), linetype= 'dashed',color='blue') +
+    geom_line(aes(risk, upper.int), linetype= 'dashed',color='blue') +
+    theme_bw()+
+   ylab("c(r)") + xlab("r")
+plot.delta <- ests %>%
+    ggplot()+
+    geom_hline(yintercept = 0, linetype = 'solid') +
+    geom_line(aes(risk, est.s),color='blue',linewidth=1.2) +
+    geom_line(aes(risk, lower.s), linetype= 'dashed',color='blue') +
+    geom_line(aes(risk, upper.s), linetype= 'dashed',color='blue') +
+    geom_vline(xintercept = 0.55, linetype = 'dotted') +
+    geom_vline(xintercept = 0.97, linetype = 'dotted') +
+    theme_bw() +
+   ylab(expression(Delta(r))) + xlab("r")
+
+plot.int / plot.delta
+ggsave("Obermeyer-2439-fits.png")
+```
+
+
+```{r}
+# Global test statistic
+l <- lh2(h.opt, c= 0, d = 1)
+dnun <- d(h.opt, c= 0, d = 1)
+sup <- ests %>%
+  mutate(T.int = abs(est.int - bias.int)/sqrt(var.int)
+         ,T.s = abs(est.s - bias.s)/sqrt(var.s)) %>%
+  summarize(T.int = max(T.int)
+            ,T.s = max(T.s)) 
+(global.T = l * (sup - dnun))
+(global.pT = 1 - FT(global.T))
+ 
+
+t1 = 0.5
+t2 = 0.6
+# Local test statistic
+ll <- lh2(h.opt, c= t1, d = t2)
+ldnun <- d(h.opt, c= t1, d =t2)
+lsup <- ests %>%
+          filter(risk >= t1, risk <= t2) %>%
+          mutate(T.int = abs(est.int - bias.int)/sqrt(var.int)
+                 ,T.s = abs(est.s - bias.s)/sqrt(var.s)) %>%
+          summarize(T.int = max(T.int)
+                    ,T.s = max(T.s)) 
+(local.T = ll * (lsup - ldnun))
+(local.pT = 1 - FT(local.T))
+
+plot.delta0.55 <- ests %>%
+    ggplot()+
+    geom_hline(yintercept = 0, linetype = 'solid') +
+    geom_line(aes(risk, est.s),color='blue',linewidth=1.2) +
+    geom_line(aes(risk, lower.s), linetype= 'dashed',color='blue') +
+    geom_line(aes(risk, upper.s), linetype= 'dashed',color='blue') +
+    geom_vline(xintercept = 0.55, linetype = 'dotted') +
+    theme_bw() +
+    theme_bw() +
+    xlim(0.50,0.6)+
+   ylab(expression(Delta(r))) + xlab("r")
+plot.delta0.55
+
+t1 = 0.95
+t2 = 0.99
+# Local test statistic
+ll <- lh2(h.opt, c= t1, d = t2)
+ldnun <- d(h.opt, c= t1, d =t2)
+lsup <- ests %>%
+          filter(risk >= t1, risk <= t2) %>%
+          mutate(T.int = abs(est.int - bias.int)/sqrt(var.int)
+                 ,T.s = abs(est.s - bias.s)/sqrt(var.s)) %>%
+          summarize(T.int = max(T.int)
+                    ,T.s = max(T.s)) 
+(local.T = ll * (lsup - ldnun))
+(local.pT = 1 - FT(local.T))
+
+
+plot.delta0.97 <- ests %>%
+    ggplot()+
+    geom_hline(yintercept = 0, linetype = 'solid') +
+    geom_line(aes(risk, est.s),color='blue',linewidth=1.2) +
+    geom_line(aes(risk, lower.s), linetype= 'dashed',color='blue') +
+    geom_line(aes(risk, upper.s), linetype= 'dashed',color='blue') +
+    geom_vline(xintercept = 0.97, linetype = 'dotted') +
+    theme_bw() +
+    xlim(0.95,0.99)+
+   ylab(expression(Delta(r))) + xlab("r")
+plot.delta0.97
+
+
+fit.end <- Sys.time()
+#fit.runtime <- difftime(fit.end, fit.start, units='mins')
+
+```
+
+
+```{r}
+tau = c(0.55, 0.97)
+
+# ------------- Threshold Calibration Error ------------- #
+TCE.fit = vcfit.bvs(Y, s, u, h = h.opt, h.bias = h.rsc, alpha= 0.05, ez = tau)
+TCE.t <- TCE.fit %>%
+          as.data.frame() %>%
+          mutate(Z.s = (est.s - bias.s)/sqrt(var.s)
+                 ,pvalue = pnorm(-abs(Z.s),lower.tail=TRUE) + pnorm(abs(Z.s),lower.tail=FALSE)
+                 ,lower = est.s - bias.s - 1.96*sqrt(var.s)
+                 ,upper = est.s - bias.s + 1.96*sqrt(var.s)
+               )
+
+
+TCE.t %>%
+    mutate(y.white = est.int
+           ,y.black = est.int + est.s) %>%
+    select(risk, y.white, y.black, est.s, upper, lower, Z.s, pvalue)
+  ggplot()+
+    geom_hline(yintercept = 0, linetype = 'solid') +
+    geom_line(data = ests, aes(risk, est.s),color='blue',linewidth=1.2) +
+    geom_line(data = ests, aes(risk, lower.s), linetype= 'dashed',color='blue') +
+    geom_line(data = ests, aes(risk, upper.s), linetype= 'dashed',color='blue') +
+    geom_pointrange(data = TCE.t, aes(risk, y = est.s, ymin = lower, ymax= upper),color='purple') +
+    #geom_vline(xintercept = 0.97, linetype = 'dotted') +
+    geom_rect(aes(xmin = 0.5, xmax = 0.6, ymin = -5 ,ymax = 5),alpha=0.1) + 
+    geom_rect(aes(xmin = 0.95, xmax = 0.99, ymin = -5 ,ymax = 5),alpha=0.1) + 
+    theme_bw() +
+    xlim(0.4,0.99) +
+    ylim(-5,5) +
+   ylab(expression(Delta(r))) + xlab("r")
+
+ests %>%
+  filter(risk %in% c(0.55, 0.97))
+```
+
+```{r}
+save(ests, file = "ests-n2439.RData")
+```
+
