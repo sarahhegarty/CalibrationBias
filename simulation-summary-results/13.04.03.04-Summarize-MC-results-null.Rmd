@@ -1,0 +1,428 @@
+---
+title: "13.04.03.04 (0.5hopt) - MC Summary"
+subtitle: "Setting: Null, n = 250"
+author: "Hegarty"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+            theme: united
+            highlight: kate
+            toc: true
+            toc_depth: 3
+            toc_float:
+                collapsed: true
+                smooth_scroll: true
+            number_sections: true
+            code_folding: hide
+            df_print: paged
+            fig_width: 7
+            fig_height: 5
+            fig_align: center
+            fig_caption: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r loadlibs, echo = FALSE, messages = FALSE, warnings = FALSE}
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(kableExtra)
+source("vc-funcs-2025-07-21.R")
+```
+
+```{r loadData, echo = FALSE}
+set.seed(336)
+
+prefix = "13.04.03.04_null-n250-*"
+filenames <- list.files("results", pattern=prefix, full.names=TRUE)
+M = length(filenames)
+m.samp <- sample(1:M, size=16, replace =FALSE)
+IRSC <- NULL
+h.rsc <- numeric(M)
+MSE <- NULL
+h.mse <- numeric(M)
+h.opt <- numeric(M)
+fit <- NULL
+pvalues <- NULL
+coverage <- NULL
+lrtp <- numeric(M)
+amlp <- numeric(M)
+amsp <- numeric(M)
+TCE <- NULL
+
+for(m in 1:M){
+  load(filenames[m])
+  vc <- results[["vc"]]
+  # RSC
+  irsc.h <- vc[["irsc.h"]] %>% 
+                as.data.frame() %>%
+                mutate(m = m)
+  IRSC <- IRSC %>% bind_rows(irsc.h)
+  
+  # h.rsc
+  h.rsc[m] <- vc[["h.rsc"]]/0.7776
+  
+  # MSE
+  mse.h <- vc[["mse.h"]] %>% 
+                as.data.frame() %>%
+                mutate(m = m)
+  MSE <- MSE %>% bind_rows(mse.h)
+  
+  # h.rsc
+  h.mse[m] <- vc[["h.mse"]]
+  h.opt[m] <- vc[["h.opt"]]
+  # fit 
+  ests <- vc[["ests"]] %>% as.data.frame() %>% mutate(m = m)
+  fit <- fit %>% bind_rows(ests)
+  
+  pvalues <- pvalues %>%
+              bind_rows(vc[["global.pvalues"]] %>%
+                            as.data.frame() %>%
+                            mutate(m = m))
+  
+  coverage <- coverage %>%
+              bind_rows(vc[["global.coverage"]] %>%
+                            as.data.frame() %>%
+                            mutate(m = m))
+  
+  # Comparisons
+  lrtp[m] <- results[["lrt"]][["pvalue"]]
+  amlp[m] <- results[["aml"]][["pvalue"]]
+  amsp[m] <- results[["ams"]][["pvalue"]]
+  
+  TCE <- TCE %>%
+          bind_rows(results[["TCE"]] %>%
+                        as.data.frame() %>%
+                        mutate(m=m))
+}
+  
+```
+
+# cubic bandwidth selection via RSC
+```{r rscViz, echo = FALSE}
+IRSC %>%
+    ggplot() +
+    geom_line(aes(h, IRSC, group = m)) +
+    geom_point(data = data.frame(m = 1:M, h = h.rsc) %>% left_join(IRSC, by = join_by(m,h)), aes(h, IRSC), color='plum') +
+    theme_bw()
+```
+
+# local bandwidth selection via MSE
+```{r mseViz, echo = FALSE}
+MSE %>%
+    ggplot() +
+    geom_line(aes(h, MSE.mean, group = m)) +
+    geom_point(data = data.frame(m = 1:M, h = h.mse) %>% left_join(MSE, by = join_by(m,h)), aes(h, MSE.mean), color='plum') +
+    geom_point(data = data.frame(m = 1:M, h = h.opt) %>% left_join(MSE, by = join_by(m,h)), aes(h, MSE.mean), color='blue') +
+    theme_bw() 
+```
+# Reject H0 Proportion
+```{r}
+alpha = 0.05
+colMeans(pvalues[c("T.int","T.s")] < alpha)
+```
+
+# Coverage
+```{r}
+colMeans(coverage[c("coverage.int","coverage.s")])
+```
+
+# Estimation Error
+```{r}
+bias.fit <- fit %>%
+              mutate(bias.int = est.int - true.int
+                     ,bias.s = est.s - true.s) %>%
+            group_by(m) %>%
+            summarize(bias.int.avg = mean(bias.int)
+                      ,bias.int.sqavg = mean(bias.int**2)
+                      ,bias.s.avg = mean(bias.s)
+                      ,bias.s.sqavg = mean(bias.s**2)
+                      )
+
+colMeans(bias.fit[,2:5])
+```
+
+# Main Coverage Plots
+
+# random sample of MC replicate, $\Delta(r)$ and $c(r)$. 
+```{r ciViz.s, echo = FALSE}
+fit %>%
+    filter(m %in% m.samp) %>%
+    mutate(clower.s = if_else(lower.s <= true.s,1,0)
+           ,cupper.s = if_else(upper.s >= true.s,1,0)
+           ,clower.int = if_else(lower.int <= true.int, 1, 0)
+           ,cupper.int = if_else(upper.int >= true.int, 1, 0)) %>%
+    
+    ggplot() + 
+    geom_line(aes(risk, est.s)) + 
+    geom_point(aes(risk, lower.s,color=factor(clower.s)),size=0.3) +
+    geom_point(aes(risk, upper.s,color=factor(cupper.s)),size=0.3) +
+    geom_line(aes(risk, true.s), color = 'gold') +
+    theme_bw() +
+    scale_color_manual(name = "Covered"
+                       ,breaks = c(0,1)
+                       ,labels = c("No","Yes")
+                       ,values = c("red","green")) +
+    facet_wrap(~m) 
+
+fit %>%
+   filter(m %in% m.samp) %>%
+    mutate(clower.s = if_else(lower.s <= true.s,1,0)
+           ,cupper.s = if_else(upper.s >= true.s,1,0)
+           ,clower.int = if_else(lower.int <= true.int, 1, 0)
+           ,cupper.int = if_else(upper.int >= true.int, 1, 0)) %>%
+   ggplot() + 
+    geom_line(aes(risk, est.int)) + 
+    geom_point(aes(risk, lower.int,color=factor(clower.int)),size = 0.3) +
+    geom_point(aes(risk, upper.int,color=factor(cupper.int)),size = 0.3) +
+    geom_line(aes(risk, true.int), color = 'gold') +
+    theme_bw() +
+    scale_color_manual(name = "Covered"
+                       ,breaks = c(0,1)
+                       ,labels = c("No","Yes")
+                       ,values = c("red","green")) +
+    facet_wrap(~m) 
+```
+
+# Explore Coverage Problem Spots
+```{r}
+coverm <- fit %>%
+    mutate(clower.s = if_else(lower.s <= true.s,1,0)
+           ,cupper.s = if_else(upper.s >= true.s,1,0)
+           ,clower.int = if_else(lower.int <= true.int, 1, 0)
+           ,cupper.int = if_else(upper.int >= true.int, 1, 0)) %>%
+    group_by(m) %>%
+    summarize(bandclower.int = min(clower.int)
+              ,bandcupper.int = min(cupper.int)
+              ,coverband.int = min(clower.int * cupper.int)
+              ,coverprop.int = mean(clower.int * cupper.int)
+              ,bandclower.s = min(clower.s)
+              ,bandcupper.s = min(cupper.s)  
+              ,coverband.s = min(clower.s * cupper.s)
+              ,coverprop.s = mean(clower.s * cupper.s))
+coverm %>%
+    ggplot(aes(m, coverprop.int)) +
+    geom_point() + theme_bw()
+coverm %>%
+    summarize(c100 = mean(coverprop.int >=1)
+              ,c99 = mean(coverprop.int >= 0.99)
+              ,c95 = mean(coverprop.int >= 0.95)
+              ,min = min(coverprop.int))
+coverm %>%
+    ggplot(aes(m, coverprop.s)) +
+    geom_point() + theme_bw()
+
+coverm %>%
+    summarize(c100 = mean(coverprop.s >=1)
+              ,c99 = mean(coverprop.s >= 0.99)
+              ,c95 = mean(coverprop.s >= 0.95)
+              ,min = min(coverprop.s))        
+    
+
+fit%>%
+    mutate(clower.s = if_else(lower.s <= true.s,1,0)
+           ,cupper.s = if_else(upper.s >= true.s,1,0)
+           ,clower.int = if_else(lower.int <= true.int, 1, 0)
+           ,cupper.int = if_else(upper.int >= true.int, 1, 0)) %>%
+    left_join(coverm, by = join_by(m)) %>%
+    filter(clower.s == 0 | cupper.s == 0) %>%
+    mutate(ou = if_else(clower.s == 0, "lower","upper")) %>%
+    ggplot() + 
+    geom_point(aes(risk, m, color = factor(ou)),size = 0.5) +
+    theme_bw() +
+    scale_color_manual(name = "Not Covered"
+                       ,breaks = c("lower","upper")
+                       ,labels = c("Lower","Upper")
+                       ,values = c("blue","lightblue"))
+
+fit %>%
+     mutate(clower.s = if_else(lower.s <= true.s,1,0)
+           ,cupper.s = if_else(upper.s >= true.s,1,0)
+           ,clower.int = if_else(lower.int <= true.int, 1, 0)
+           ,cupper.int = if_else(upper.int >= true.int, 1, 0)) %>%
+    left_join(coverm, by = join_by(m)) %>%
+    filter(clower.s == 0 | cupper.s == 0) %>%
+    mutate(ou = if_else(clower.s == 0, "lower","upper")) %>%
+    ggplot() + 
+    geom_density(aes(risk, color = factor(ou))) +
+    theme_bw() +
+    scale_color_manual(name = "Not Covered"
+                       ,breaks = c("lower","upper")
+                       ,labels = c("Lower","Upper")
+                       ,values = c("blue","lightblue"))
+
+
+
+fit%>%
+     mutate(clower.s = if_else(lower.s <= true.s,1,0)
+           ,cupper.s = if_else(upper.s >= true.s,1,0)
+           ,clower.int = if_else(lower.int <= true.int, 1, 0)
+           ,cupper.int = if_else(upper.int >= true.int, 1, 0)) %>%
+     left_join(coverm, by = join_by(m)) %>%
+    filter(coverband.s == 0) %>%
+    filter(coverprop.s < 0.95) %>%
+    ggplot() + 
+    geom_point(aes(risk, est.s, group = m), color='blue', alpha = 0.2, size=0.3, shape = 24) +
+    geom_point(aes(risk, lower.s, group = m, color= factor(clower.s)), alpha = 0.2, size=0.3, shape = 24) +
+    geom_point(aes(risk, upper.s, group = m, color = factor(cupper.s)), alpha =0.2, size=0.3, shape = 25) +
+    geom_line(aes(risk, true.s), color = 'gold', linewidth = 0.5) +
+    theme_bw() +
+    scale_color_manual(name = "Not Covered"
+                       ,breaks = c(0,1)
+                       ,labels = c("No","Yes")
+                     ,values = c("red","grey80")) +
+    facet_wrap(~m)
+```
+
+# Comparison 
+```{r}
+# power of LRT
+mean(lrtp < alpha)
+
+# power of AM with linear delta
+mean(amlp < alpha)
+
+# power of AM with spline delta
+mean(amsp < alpha)
+```
+
+# Local Test Statistic - 0.5
+```{r}
+tau = 0.5
+tau.int = 0.1
+t1= tau - tau.int
+t2 = tau + tau.int
+fit.local <- fit %>%
+              #  left_join(h.opt, by = join_by(m)) %>%
+                mutate( D.int = D(alpha = alpha, h = h.opt, var = var.int, c= t1, d= t2)
+                       ,lower.int = est.int - bias.int - D.int
+                       ,upper.int = est.int - bias.int + D.int
+                       ,T.int = abs(est.int - bias.int)/sqrt(var.int)
+                       ,D.s = D(alpha = alpha, h = h.opt, var = var.s, c = t1, d = t2)
+                       ,lower.s = est.s - bias.s - D.s
+                       ,upper.s = est.s - bias.s + D.s 
+                       ,T.s = abs(est.s - bias.s)/sqrt(var.s))
+             
+
+fit.local %>%
+    mutate( clower.int = if_else(lower.int <= true.int, 1, 0)
+           ,cupper.int = if_else(upper.int >= true.int, 1, 0)
+           ,clower.s = if_else(lower.s <= true.s, 1, 0)
+           ,cupper.s = if_else(upper.s >= true.s, 1, 0)) %>%
+    group_by(m) %>%
+    filter(t1 <= risk, risk <= t2) %>%
+    summarize(bandclower.int = min(clower.int)
+              ,bandcupper.int = min(cupper.int)
+              ,bandclower.s = min(clower.s)
+              ,bandcupper.s = min(cupper.s)) %>%
+    ungroup() %>%
+    summarize(coverbandL.int = mean(bandclower.int)
+              ,coverbandU.int = mean(bandcupper.int)
+              ,coverband.int = mean(bandclower.int * bandcupper.int)
+              ,coverbandL.s = mean(bandclower.s)
+              ,coverbandU.s = mean(bandcupper.s)
+              ,coverband.s = mean(bandclower.s * bandcupper.s))
+
+h.opt <- fit %>% select(m, h.opt) %>% unique()
+l <- lh2(h.opt$h.opt, c = t1, d = t2)
+dnun <- d(h.opt$h.opt, c = t1, d = t2)
+sup <- fit.local %>%
+  group_by(m) %>%
+  filter(t1 <= risk, risk <= t2) %>%
+  summarize(T.int = max(T.int)
+            ,T.s = max(T.s)) 
+T = l * (sup - dnun)
+pT = 1 - FT(T)
+colMeans(pT[c("T.int","T.s")] < alpha)
+```
+
+
+# Local Test Statistic - 0.9
+```{r}
+tau = 0.9
+tau.int = 0.1
+t1= tau - tau.int
+t2 = tau + tau.int
+fit.local <- fit %>%
+              #  left_join(h.opt, by = join_by(m)) %>%
+                mutate( D.int = D(alpha = alpha, h = h.opt, var = var.int, c= t1, d= t2)
+                       ,lower.int = est.int - bias.int - D.int
+                       ,upper.int = est.int - bias.int + D.int
+                       ,T.int = abs(est.int - bias.int)/sqrt(var.int)
+                       ,D.s = D(alpha = alpha, h = h.opt, var = var.s, c = t1, d = t2)
+                       ,lower.s = est.s - bias.s - D.s
+                       ,upper.s = est.s - bias.s + D.s 
+                       ,T.s = abs(est.s - bias.s)/sqrt(var.s))
+             
+
+fit.local %>%
+    mutate( clower.int = if_else(lower.int <= true.int, 1, 0)
+           ,cupper.int = if_else(upper.int >= true.int, 1, 0)
+           ,clower.s = if_else(lower.s <= true.s, 1, 0)
+           ,cupper.s = if_else(upper.s >= true.s, 1, 0)) %>%
+    group_by(m) %>%
+    filter(t1 <= risk, risk <= t2) %>%
+    summarize(bandclower.int = min(clower.int)
+              ,bandcupper.int = min(cupper.int)
+              ,bandclower.s = min(clower.s)
+              ,bandcupper.s = min(cupper.s)) %>%
+    ungroup() %>%
+    summarize(coverbandL.int = mean(bandclower.int)
+              ,coverbandU.int = mean(bandcupper.int)
+              ,coverband.int = mean(bandclower.int * bandcupper.int)
+              ,coverbandL.s = mean(bandclower.s)
+              ,coverbandU.s = mean(bandcupper.s)
+              ,coverband.s = mean(bandclower.s * bandcupper.s))
+
+h.opt <- fit %>% select(m, h.opt) %>% unique()
+l <- lh2(h.opt$h.opt, c = t1, d = t2)
+dnun <- d(h.opt$h.opt, c = t1, d = t2)
+sup <- fit.local %>%
+  group_by(m) %>%
+  filter(t1 <= risk, risk <= t2) %>%
+  summarize(T.int = max(T.int)
+            ,T.s = max(T.s)) 
+T = l * (sup - dnun)
+pT = 1 - FT(T)
+colMeans(pT[c("T.int","T.s")] < alpha)
+```
+
+# TCE - 0.5
+```{r}
+source("cal.base.R")
+source("delta.shift.R")
+TCE.t <- TCE %>%
+          mutate(Z.s = (est.s - bias.s)/sqrt(var.s)
+                 ,true.s = delta.curve(z = risk, delta = 0)[1]
+                 ,pvalue = pnorm(-abs(Z.s),lower.tail=TRUE) + pnorm(abs(Z.s),lower.tail=FALSE)
+                 ,lower = est.s - bias.s - 1.96*sqrt(var.s)
+                 ,upper = est.s - bias.s + 1.96*sqrt(var.s)
+                 ,lcover = if_else(true.s >= lower,1,0)
+                 ,ucover = if_else(true.s <= upper, 1,0)
+                 ,cover = if_else(true.s >= lower & true.s <= upper,1,0))
+
+TCE.t %>%
+    group_by(risk ) %>%
+    summarize(mean(pvalue < alpha)
+              ,mean(cover)
+              ,mean(lcover)
+              ,mean(ucover))
+
+TCE.t %>%
+    filter(m <= 100) %>%
+    ggplot() + 
+    geom_pointrange(aes(x = m, y = est.s, ymin = lower, ymax = upper,color=factor(cover)),size=0.3) +
+    geom_hline(yintercept = 0, linetype = 'dashed') + 
+    coord_flip() +
+    theme_bw() +
+    ylab("TCE") +
+    scale_color_manual(name = "Covered"
+                       ,breaks = c(0,1)
+                       ,labels = c("No","Yes")
+                       ,values = c("red","green")) +
+    facet_wrap(~risk)
+```
+
