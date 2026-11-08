@@ -21,3 +21,7 @@ Investigating group fairness through estimating differential calibration bias wi
     - delta.bspline2.R: corresponds to the down-shifted curve
 - 13.04.03.04-runOnce.R contains the code for running one interaction of the simulation, including data generation, selecting the bandwidths, fitting the varying coefficient model and estimating the test statistics.
 - 13.04.03.04-runMC-[setting]-[delta]-n[N].R: implement the Monte Carlo experiments for the simulation setting defined by the functional form of the calibration curve (setting = bs0/increasing-treand, bs1/zero-centered, bs2/down-shifted), effect size at tau=0.5 (delta=0.1, 0.2), and group sample size (N=500,1000).
+
+# Details: Synthetic Data Example
+- 13.04.01.02-Obermeyer VC estimate-[setting].Rmd: RMarkdown file running the synthetic data example for the specified data sample (setting = 10pct/Unbalanced, n=1000/Smaller Balanced, n=2439=Larger Balanced).
+
