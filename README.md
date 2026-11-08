@@ -9,6 +9,7 @@ Investigating group fairness through estimating differential calibration bias wi
 
 # Details: vc-funcs
 - The primary function which implements the VC model is vcfit.bvs().
-- Function for calculating the residual squares criterion (RSC) and mean squared error (MSE) of the primary curve and the bias curve are provided.
+- Function for calculating the residual squares criterion (RSC), rsc(), and mean squared error (MSE) of the primary curve, zheng.mse(), and the bias curve, zheng.mse.cubics(), are provided.
+- Supporting functions such as colMax() which returns the maximum value in a column, kernel() which calculates the kernel are also included.
   
   
